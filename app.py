@@ -4,15 +4,20 @@ import pandas as pd
 from io import BytesIO
 
 def extract_po_table(pdf_file, pdf_name):
-all_rows = []
 
 ```
+all_rows = []
+
 with pdfplumber.open(pdf_file) as pdf:
+
     for page in pdf.pages:
+
         tables = page.extract_tables()
 
         for table in tables:
+
             for row in table:
+
                 if not row:
                     continue
 
@@ -20,6 +25,7 @@ with pdfplumber.open(pdf_file) as pdf:
                     continue
 
                 if len(row) >= 9:
+
                     item = row[0]
                     part_number = row[1]
                     description = row[2]
@@ -46,10 +52,12 @@ with pdfplumber.open(pdf_file) as pdf:
                     })
 
 df = pd.DataFrame(all_rows)
+
 return df
 ```
 
 st.set_page_config(page_title="PDF PO to Excel", layout="wide")
+
 st.title("📄 Purchase Order PDF → Excel Converter")
 
 uploaded_files = st.file_uploader(
@@ -59,16 +67,20 @@ accept_multiple_files=True
 )
 
 if uploaded_files:
-all_dfs = []
 
 ```
+all_dfs = []
+
 for file in uploaded_files:
+
     df = extract_po_table(file, file.name)
+
     all_dfs.append(df)
 
 final_df = pd.concat(all_dfs, ignore_index=True)
 
 st.subheader("Preview")
+
 st.dataframe(final_df)
 
 output = BytesIO()
