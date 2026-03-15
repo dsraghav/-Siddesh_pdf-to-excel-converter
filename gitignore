@@ -1,10 +1,10 @@
-__pycache__/
+**pycache**/
 *.pyc
 *.pyo
+*.pyd
 .env
-.DS_Store
-.venv/
 venv/
-*.egg-info/
-dist/
-build/
+.env.local
+.DS_Store
+*.xlsx
+*.log
