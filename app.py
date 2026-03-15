@@ -8,8 +8,9 @@ from io import BytesIO
 def extract_items_from_pdf(pdf_file, pdf_name):
     items = []
     current_item = None
-    description_lines = []      # accumulate multi-line description (fallback mode)
+    description_lines = []      # accumulate multi-line description
     tax_lines_buffer = []        # accumulate tax-related lines
+    fields_found = False         # whether we have already found the fields for the current item
 
     # Patterns for tax lines
     tax_patterns = {
@@ -19,31 +20,19 @@ def extract_items_from_pdf(pdf_file, pdf_name):
         'net': re.compile(r'Price\(Net\)\s+([\d,]+\.?\d*)')
     }
 
-    # Comprehensive pattern for a line that contains the entire item data
-    # Format: [leading description] PART_NO QTY UNIT DATE PRICE AMOUNT [trailing description]
-    full_line_pattern = re.compile(
-        r'^(.*?)\s+(\d+\s*-\s*(?:[A-Z]+)?)\s+'           # leading desc + part number (e.g., "995468 -" or "9983 - OT")
-        r'([\d,]+\.?\d*)\s+'                              # quantity
-        r'([A-Z]{2})\s+'                                  # unit (two uppercase letters)
-        r'(\d{2}\.\d{2}\.\d{4})\s+'                       # date (dd.mm.yyyy)
-        r'([\d,]+\.?\d*)\s+'                              # price per unit
-        r'([\d,]+\.?\d*)\s*'                              # amount
-        r'(.*)$'                                          # trailing description
+    # Pattern to extract fields from a line (must appear at the end of the line)
+    # Groups: part_number, quantity, unit, date, price, amount
+    field_extract_pattern = re.compile(
+        r'(\d+(?:\s*-\s*[A-Z]+)?)\s*'          # part number (e.g., 995468 or 9983 - OT)
+        r'([\d,]+\.?\d*)\s*'                    # quantity
+        r'([A-Z]{2})\s*'                         # unit (two uppercase letters)
+        r'(\d{2}\.\d{2}\.\d{4})\s*'              # date (dd.mm.yyyy)
+        r'([\d,]+\.?\d*)\s*'                      # price per unit
+        r'([\d,]+\.?\d*)$'                        # amount
     )
 
     # Pattern for a line that starts with an item number
     item_start_pattern = re.compile(r'^(\d+)\s+(.*)')
-
-    # Pattern for a separate field line (used in fallback mode)
-    # Format: PART_NO  QTY  UNIT  DATE  PRICE  AMOUNT
-    field_pattern = re.compile(
-        r'^\s*(\d+\s*-\s*(?:[A-Z]+)?)\s+'                # part number
-        r'([\d,]+\.?\d*)\s+'                              # quantity
-        r'([A-Z]{2})\s+'                                  # unit
-        r'(\d{2}\.\d{2}\.\d{4})\s+'                       # date
-        r'([\d,]+\.?\d*)\s+'                              # price per unit
-        r'([\d,]+\.?\d*)$'                                # amount
-    )
 
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
@@ -67,43 +56,23 @@ def extract_items_from_pdf(pdf_file, pdf_name):
                     # Start new item
                     item_num = item_match.group(1)
                     rest_of_line = item_match.group(2)
-
-                    # Try to parse the rest_of_line with the full-line pattern
-                    full_match = full_line_pattern.match(rest_of_line)
-                    if full_match:
-                        # Single-line item: all information is here
-                        current_item = {
-                            'item': item_num,
-                            'pdf_name': pdf_name,
-                            'material': (full_match.group(1) + ' ' + full_match.group(8)).strip(),
-                            'part_number': full_match.group(2).strip(),
-                            'quantity': full_match.group(3).replace(',', ''),
-                            'unit': full_match.group(4),
-                            'date': full_match.group(5),
-                            'price_per_unit': full_match.group(6).replace(',', ''),
-                            'amount': full_match.group(7).replace(',', '')
-                        }
-                        # No description_lines or tax_lines for this item yet
-                        description_lines = []
-                        tax_lines_buffer = []
-                    else:
-                        # Multi-line case: start accumulating description
-                        current_item = {
-                            'item': item_num,
-                            'pdf_name': pdf_name,
-                            'material': '',
-                            'part_number': '',
-                            'quantity': '',
-                            'unit': '',
-                            'date': '',
-                            'price_per_unit': '',
-                            'amount': ''
-                        }
-                        description_lines = [rest_of_line]   # first part of description
-                        tax_lines_buffer = []
+                    current_item = {
+                        'item': item_num,
+                        'pdf_name': pdf_name,
+                        'material': '',
+                        'part_number': '',
+                        'quantity': '',
+                        'unit': '',
+                        'date': '',
+                        'price_per_unit': '',
+                        'amount': ''
+                    }
+                    description_lines = [rest_of_line]   # first part of description
+                    tax_lines_buffer = []
+                    fields_found = False
                     continue
 
-                # If we're not inside an item, skip (should not happen)
+                # If we're not inside an item, skip
                 if current_item is None:
                     continue
 
@@ -112,21 +81,29 @@ def extract_items_from_pdf(pdf_file, pdf_name):
                     tax_lines_buffer.append(line)
                     continue
 
-                # In multi-line mode, try to parse as a separate field line
-                if not full_match:   # we are in multi-line mode
-                    field_match = field_pattern.match(line)
-                    if field_match:
-                        # This line contains the structured item data
-                        current_item['part_number'] = field_match.group(1).strip()
-                        current_item['quantity'] = field_match.group(2).replace(',', '')
-                        current_item['unit'] = field_match.group(3)
-                        current_item['date'] = field_match.group(4)
-                        current_item['price_per_unit'] = field_match.group(5).replace(',', '')
-                        current_item['amount'] = field_match.group(6).replace(',', '')
-                        continue
-
-                    # If not a field line, it's a continuation of the description
-                    description_lines.append(line)
+                # If fields have not been found yet, try to extract them from this line
+                if not fields_found:
+                    fields_match = field_extract_pattern.search(line)
+                    if fields_match:
+                        # Found the fields in this line
+                        current_item['part_number'] = fields_match.group(1).strip()
+                        current_item['quantity'] = fields_match.group(2).replace(',', '')
+                        current_item['unit'] = fields_match.group(3)
+                        current_item['date'] = fields_match.group(4)
+                        current_item['price_per_unit'] = fields_match.group(5).replace(',', '')
+                        current_item['amount'] = fields_match.group(6).replace(',', '')
+                        # Any text before the fields on this line is part of the description
+                        preceding_text = line[:fields_match.start()].strip()
+                        if preceding_text:
+                            description_lines.append(preceding_text)
+                        fields_found = True
+                    else:
+                        # No fields yet, so this line is part of the description
+                        description_lines.append(line)
+                else:
+                    # Fields already found; any non-tax line here is unexpected, but we'll ignore or could log
+                    # In practice, after fields only tax lines appear, so we do nothing.
+                    pass
 
         # Finalize the last item after processing all pages
         if current_item is not None:
@@ -158,9 +135,9 @@ def extract_items_from_pdf(pdf_file, pdf_name):
 
 
 def finalize_item(item_dict, description_lines, tax_lines_buffer, tax_patterns):
-    """Combine description lines (if any) and parse tax lines into the item dictionary."""
-    # Only combine description if it hasn't been set already (i.e., single-line case)
-    if description_lines and not item_dict.get('material'):
+    """Combine description lines and parse tax lines into the item dictionary."""
+    # Build material from all collected description lines
+    if description_lines:
         item_dict['material'] = ' '.join(description_lines).strip()
 
     # Parse tax lines
@@ -205,7 +182,6 @@ if uploaded_files:
         status_text.text(f"Processing {uploaded_file.name}...")
         try:
             df = extract_items_from_pdf(uploaded_file, uploaded_file.name)
-            # Use a key that preserves order but we will concatenate later
             all_dfs[uploaded_file.name] = df
         except Exception as e:
             st.error(f"Error processing {uploaded_file.name}: {e}")
